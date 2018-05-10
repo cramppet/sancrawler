@@ -1,150 +1,95 @@
 package main
 
 import (
+	"database/sql"
 	"flag"
 	"fmt"
-	"io/ioutil"
-	"net/http"
-	"regexp"
+	_ "github.com/lib/pq"
+	"log"
 	"strings"
 )
 
-const (
-	CRT_SH_BASE   = "https://crt.sh/"
-	CRT_SH_ORG    = "?O="
-	CRT_SH_DOMAIN = "?q="
-	NUM_CRAWLERS  = 50
-	MAX_CHAN_LEN  = 1000
-)
-
-var NAME_CHAN chan string
-var ID_CHAN chan string
-var DONE_CHAN chan bool
-
-func CrawlerFn() {
-	// YES. I'll get an XML parser when I need one.
-	// https://stackoverflow.com/questions/1732348/regex-match-open-tags-except-xhtml-self-contained-tags
-	RE_COMMON_NAMES := regexp.MustCompile(`(?i)<br>commonName=.*?<br>`)
-	RE_SAN := regexp.MustCompile(`(?i)<br>DNS:.*?<br>`)
-
-	for {
-		select {
-		case <-DONE_CHAN:
-			return
-
-		case id := <-ID_CHAN:
-			url := CRT_SH_BASE + id
-			res, err := http.Get(url)
-
-			if err != nil {
-				panic(err)
-			}
-
-			body, _ := ioutil.ReadAll(res.Body)
-			bodys := strings.Replace(string(body), "&nbsp;", "", -1)
-			res.Body.Close()
-
-			common_names := RE_COMMON_NAMES.FindAllString(bodys, -1)
-			san := RE_SAN.FindAllString(bodys, -1)
-
-			// Ignore the first common name since that is the common name of the issuer.
-			if common_names != nil {
-				for i := 1; i < len(common_names); i += 1 {
-					temp := common_names[i]
-					temp = strings.Replace(temp, "<BR>", "", -1)
-					temp = strings.Replace(temp, "commonName=", "", -1)
-					NAME_CHAN <- temp
-				}
-			}
-
-			if san != nil {
-				for i := 0; i < len(san); i += 1 {
-					temp := san[i]
-					temp = strings.Replace(temp, "<BR>", "", -1)
-					temp = strings.Replace(temp, "DNS:", "", -1)
-					NAME_CHAN <- temp
-				}
-			}
-		}
-	}
-}
-
-func GetDomainsByOrg(orgname string) {
-	orgname = strings.Replace(orgname, " ", "+", -1)
-	url := CRT_SH_BASE + CRT_SH_ORG + orgname
-	domains_and_subdomains := GetNames(url, true)
-
-	for k, _ := range domains_and_subdomains {
-		fmt.Println(k)
-	}
-}
-
-func GetSubdomainsByDomain(domain string) map[string]int {
-	url := CRT_SH_BASE + CRT_SH_DOMAIN + `%25` + domain
-	subdomains := GetNames(url, false)
-	return subdomains
-}
-
-func GetNames(url string, start_crawlers bool) map[string]int {
-	RE_ORG_IDS, _ := regexp.Compile(`\?id\=\d+`)
-	domains := make(map[string]int)
-	res, err := http.Get(url)
+/* run_query => runs a SQL query against the crt.sh SQL instance to extract
+ * all common names and subject alternative names from every certificate
+ * which matches the specified identifier on either the "Organization" or
+ * "Organizational Unit" field in the X509 data.
+ *
+ * Returns: map[string]int => a hashmap containing the results, a hashmap
+ * is used as a simple mechanism to keep a uniq list.
+ */
+func run_query(identifier string) map[string]int {
+	conn := "postgres://guest@crt.sh/certwatch?sslmode=disable"
+	db, err := sql.Open("postgres", conn)
+	query := `
+        SELECT ci.ISSUER_CA_ID,
+               ci.NAME_VALUE NAME_VALUE,
+               min(c.ID) MIN_CERT_ID,
+               x509_altNames(c.CERTIFICATE, 2, TRUE) SAN_NAME,
+               x509_nameAttributes(c.CERTIFICATE, 'commonName', TRUE) COMMON_NAME
+          FROM ca,
+               ct_log_entry ctle,
+               certificate_identity ci,
+               certificate c
+          WHERE ci.ISSUER_CA_ID = ca.ID
+                AND c.ID = ctle.CERTIFICATE_ID
+                AND ci.CERTIFICATE_ID = c.ID
+                AND ((lower(ci.NAME_VALUE) LIKE $1 || '%' AND ci.NAME_TYPE = 'organizationName')
+                      OR (lower(ci.NAME_VALUE) LIKE $1 || '%' AND ci.NAME_TYPE = 'organizationalUnitName'))
+          GROUP BY ci.ISSUER_CA_ID, c.ID, NAME_VALUE, COMMON_NAME, SAN_NAME;
+        `
 
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 
-	defer res.Body.Close()
+	rows, err := db.Query(query, identifier)
+	known := make(map[string]int)
 
-	// After we have obtained the list of IDs, extract them
-	body, _ := ioutil.ReadAll(res.Body)
-	ids := RE_ORG_IDS.FindAllString(string(body), -1)
+	if err != nil {
+		log.Fatal(err)
+	} else {
+		for rows.Next() {
+			var ca_id string
+			var cert_id string
+			var name_value string
+			var common_name string
+			var san_name string
 
-	// Spawn the crawlers and supply them with the IDs via ID_CHAN
-	if start_crawlers {
-		for i := 0; i < NUM_CRAWLERS; i += 1 {
-			go CrawlerFn()
+			err = rows.Scan(&ca_id, &cert_id, &name_value, &common_name, &san_name)
+
+			if err == nil {
+				known[san_name] = 0
+				known[common_name] = 0
+			} else {
+				log.Fatal(err)
+			}
 		}
 	}
 
-	for i := 0; i < len(ids); i += 1 {
-		select {
-		case name := <-NAME_CHAN:
-			domains[name] = 0
-		case ID_CHAN <- ids[i]:
-			continue
-		}
-	}
-
-	for len(ID_CHAN) > 0 || len(NAME_CHAN) > 0 {
-		name := <-NAME_CHAN
-		domains[name] = 0
-	}
-
-	return domains
-}
-
-func print_ascii_art() {
-  art := `
-  __________
-  \\        | S A N   C R A W L E R
-   \\       | Find subdomains with X509 metadata
-    \\@@@@@@|   @cramppet
-  `
-  fmt.Println(art)
+	rows.Close()
+	db.Close()
+	return known
 }
 
 func main() {
-	ID_CHAN = make(chan string, MAX_CHAN_LEN)
-	NAME_CHAN = make(chan string, MAX_CHAN_LEN)
-	DONE_CHAN = make(chan bool, NUM_CRAWLERS)
-
-	var org = flag.String("o", "", "Organization to use as a seed")
+	var org = flag.String("s", "", "Seed string")
 	flag.Parse()
 
 	if *org != "" {
-                print_ascii_art()
-		GetDomainsByOrg(*org)
+		art := `
+__________
+\\        | S A N   C R A W L E R
+ \\       | Find subdomains with X509 metadata
+  \\@@@@@@|   @cramppet
+  `
+
+		fmt.Println(art)
+
+		org_lower := strings.ToLower(*org)
+		results := run_query(org_lower)
+
+		for res, _ := range results {
+			fmt.Println(res)
+		}
 	}
 }
-
