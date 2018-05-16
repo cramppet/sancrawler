@@ -86,10 +86,10 @@ func run_query(identifier string) map[string]int {
 
 	uniq_domains := get_uniq_domains(known)
 	for domain, _ := range uniq_domains {
-                fmt.Println("Running subdomain query on: ", domain)
+                fmt.Println("[+] Running subdomain search on: ", domain)
 		qdomain := reverse("%." + strings.ToLower(domain))
-
 		rows, err := db.Query(query2, qdomain)
+
 		if err != nil {
 			log.Fatal(err)
 			continue
@@ -106,7 +106,7 @@ func run_query(identifier string) map[string]int {
 		}
 	}
 
-        rows.Close()
+	rows.Close()
 	db.Close()
 	return known
 }
@@ -114,7 +114,9 @@ func run_query(identifier string) map[string]int {
 func get_uniq_domains(domains map[string]int) map[string]int {
 	uniq := make(map[string]int)
 	for domain, _ := range domains {
-		u, err := tld.Parse("http://" + domain)
+                // This library almost works correctly. But not entirely.
+                // There are bugs even when parsing trivial URLs.
+		u, err := tld.Parse("http://does-not-exist." + domain)
 		if err == nil {
 			d := u.Domain + "." + u.TLD
 			uniq[d] = 0
