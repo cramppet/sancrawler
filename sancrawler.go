@@ -49,7 +49,7 @@ func run_query(identifier string) map[string]int {
             certificate c
         WHERE ci.ISSUER_CA_ID = ca.ID
             AND c.ID = ctle.CERTIFICATE_ID
-            AND reverse(lower(ci.NAME_VALUE)) LIKE '%.' || $1
+            AND reverse(lower(ci.NAME_VALUE)) LIKE $1
             AND ci.CERTIFICATE_ID = c.ID
         GROUP BY ci.ISSUER_CA_ID, NAME_VALUE;
         `
@@ -84,9 +84,10 @@ func run_query(identifier string) map[string]int {
 
 	rows.Close()
 
-	uniq_domains = get_uniq_domains(known)
+	uniq_domains := get_uniq_domains(known)
 	for domain, _ := range uniq_domains {
-		qdomain := reverse(strings.ToLower(domain))
+                fmt.Println("Running subdomain query on: ", domain)
+		qdomain := reverse("%." + strings.ToLower(domain))
 
 		rows, err := db.Query(query2, qdomain)
 		if err != nil {
@@ -115,7 +116,7 @@ func get_uniq_domains(domains map[string]int) map[string]int {
 	for domain, _ := range domains {
 		u, err := tld.Parse("http://" + domain)
 		if err == nil {
-			d = u.Domain + "." + u.TLD
+			d := u.Domain + "." + u.TLD
 			uniq[d] = 0
 		}
 	}
