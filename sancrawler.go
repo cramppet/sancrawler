@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
-	tld "github.com/jpillora/go-tld"
 	_ "github.com/lib/pq"
 	"log"
 	"strings"
@@ -86,7 +85,7 @@ func run_query(identifier string) map[string]int {
 
 	uniq_domains := get_uniq_domains(known)
 	for domain, _ := range uniq_domains {
-                fmt.Println("[+] Running subdomain search on: ", domain)
+		fmt.Println("[+] Running subdomain search on: ", domain)
 		qdomain := reverse("%." + strings.ToLower(domain))
 		rows, err := db.Query(query2, qdomain)
 
@@ -114,15 +113,26 @@ func run_query(identifier string) map[string]int {
 func get_uniq_domains(domains map[string]int) map[string]int {
 	uniq := make(map[string]int)
 	for domain, _ := range domains {
-                // This library almost works correctly. But not entirely.
-                // There are bugs even when parsing trivial URLs.
-		u, err := tld.Parse("http://does-not-exist." + domain)
-		if err == nil {
-			d := u.Domain + "." + u.TLD
-			uniq[d] = 0
+		tld := tld_parse(domain)
+		if tld != "" {
+			uniq[tld] = 0
 		}
 	}
 	return uniq
+}
+
+func tld_parse(name string) string {
+	parts := strings.Split(name, ".")
+	n := len(parts)
+	if n < 2 {
+		return ""
+	} else if n == 2 {
+		return name
+	} else if parts[n-2] == "co" {
+		return strings.Join(parts[n-3:], ".")
+	} else {
+		return strings.Join(parts[n-2:], ".")
+	}
 }
 
 func reverse(s string) string {
