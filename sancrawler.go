@@ -1,5 +1,18 @@
 package main
 
+/* TODO Look into this:
+ * https://en.wikipedia.org/wiki/String_metric
+ *
+ * Essentially what we want to do is to look at organization names and
+ * organizational units and if they are above a certain string metric
+ * threshold report them back to the user as perhaps being of interest.
+ * I don't want it to automatically assume they are OK.
+ *
+ * Also, since we are doing literally no concurrent tasks anymore, why
+ * are we using golang still? Everything is more painful to do with no
+ * tangible benefit.
+ */
+
 import (
 	"database/sql"
 	"flag"

@@ -1,10 +1,11 @@
 # SANCrawler
 
-Enumerates subdomains and top level domains using X509 certificate meta-data.
+Enumerates subdomains and top level domains using X509 certificate data fields.
 
 ## How to build 
 
 `sudo apt-get install golang`
+
 `make`
 
 ## How to run
