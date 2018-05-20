@@ -11,16 +11,16 @@ for more.
 
 SANCrawler will output results in the following JSON schema:
 
-`
+```json
 {
   // List containing all of the discovered linked domains and subdomains as strings
   "known_domains": [],
 
   // List containing possible organization names / organizational unit names which 
   // can be used with SANCrawler again if desired.
-  "possible_orgs": [],
+  "possible_orgs": []
 }
-`
+```
 
 ## How to run
 
@@ -28,7 +28,5 @@ SANCrawler will output results in the following JSON schema:
    certificate. Extract the "Organization" or "Organizational Unit" field. For example, 
    https://www.google.com/ has the seed value of: Google Trust Services
 
-2. Invoke as follows:
-
-  `python sancrawler.py -s "Google Trust Services"`
+2. Invoke as follows: `python sancrawler.py -s "Google Trust Services"`
 
