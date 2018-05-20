@@ -13,14 +13,15 @@ SANCrawler will output results in the following JSON schema:
 
 ```json
 {
-  // List containing all of the discovered linked domains and subdomains as strings
   "known_domains": [],
 
-  // List containing possible organization names / organizational unit names which 
-  // can be used with SANCrawler again if desired.
   "possible_orgs": []
 }
 ```
+
+Where `known_domains` is a list containing all of the discovered linked domains and subdomains as strings,
+and `possible_orgs` is list containing possible organization names / organizational unit names which 
+can be used with SANCrawler again if desired.
 
 ## How to run
 
