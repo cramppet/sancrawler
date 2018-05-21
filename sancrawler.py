@@ -1,6 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+# TODO: Remove the domain names appearing as organization names
+# TODO: Make the domains all lowercase to avoid running searches more than once
+# TODO: Add the 3rd SQL query to find similar org names
+# TODO: Add WHOIS checks via SecurityTrails for verification of TLDs
+# TODO: Fix Sorensen-Dice, I think its slightly wrong
+
 import argparse
 import re
 import json
@@ -107,6 +113,23 @@ def get_linked_tlds(cur, org):
         print 'Programming error caught: '
         print str(ex)
     return ret
+
+
+def get_like_orgs(orgname):
+    '''
+    SELECT ci.NAME_VALUE NAME_VALUE
+    FROM ca,
+     ct_log_entry ctle,
+     certificate_identity ci,
+     certificate c
+    WHERE ci.ISSUER_CA_ID = ca.ID
+     AND ctle.CERTIFICATE_ID = c.ID
+     AND ci.CERTIFICATE_ID = c.ID
+     AND (ci.NAME_TYPE = 'organizationName' OR ci.NAME_TYPE = 'organizationalUnitName')
+     AND lower(ci.NAME_VALUE) LIKE lower('ORG %')
+    GROUP BY NAME_VALUE;
+    '''
+    pass
 
 
 # An attempt at performing top level domain extraction from x509 cert data.
