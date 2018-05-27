@@ -4,12 +4,14 @@
 # TODO: Remove the domain names appearing as organization names
 # TODO: Make the domains all lowercase to avoid running searches more than once
 # TODO: Add the 3rd SQL query to find similar org names
-# TODO: Add WHOIS checks via SecurityTrails for verification of TLDs
-# TODO: Fix Sorensen-Dice, I think its slightly wrong
+
+# TODO: Remove Sorensen-Dice, replace with lookup in Crunchbase ODM
+# TODO: Remove WHOIS checks, replace with lookup in Crunchbase
 
 import argparse
 import re
 import json
+import whois
 
 import psycopg2
 
@@ -43,12 +45,40 @@ BANNER = r'''
 '''
 
 
+
+# As of 5/24/2018 these CA's have collectively issued approximately
+# 457,840,000 X509 certificates. They are useful so we can avoid
+# false positives.
+KNOWN_CA_ORGS = [
+    "Let's Encrypt"
+    "cPanel, Inc."
+    "COMODO CA Limited"
+    "GoDaddy.com, Inc."
+    "DigiCert Inc"
+    "Symantec Corporation"
+    "GlobalSign nv-sa"
+    "GeoTrust Inc."
+    "CloudFlare, Inc."
+    "LANCOM Systems"
+    "Western Digital Technologies"
+    "LANCOM Systems GmbH"
+    "StartCom Ltd."
+    "D-LINK"
+    "GeoTrust, Inc."
+    "Ubiquiti Networks Inc."
+    "SomeOrganization"
+    "VeriSign, Inc."
+    "Technicolor"
+    "TrustAsia Technologies, Inc."
+]
+
+
 # Query the crt.sh looking for subdomains of a given top level domain.
 # Additionally, we grab the certificate's organizationalName and
 # organizationalUnitName. We use those later, to look for potentially more seed
-# values to use. Results are returned as a 2-tuple of ([SUBDOMAINS], [ORG-NAMES])
-def get_subdomains(cur, tld):
-    ret = ([], [])
+# values to use.
+def get_tld_linked_orgs(cur, tld):
+    ret = []
     transformed = '%%.' + tld
     subdomain_query = '''
     SELECT ci.ISSUER_CA_ID,
@@ -68,12 +98,10 @@ def get_subdomains(cur, tld):
     try:
         cur.execute(subdomain_query, (transformed,))
         for record in cur:
-            if record[1]:
-                ret[0].append(record[1])
-            if record[2]:
-                ret[1].append(record[2])
-            if record[3]:
-                ret[1].append(record[3])
+            if record[2] and not record[2].endswith(tld):
+                ret.append(record[2])
+            if record[3] and not record[3].endswith(tld):
+                ret.append(record[3])
     except psycopg2.ProgrammingError as ex:
         print 'Programming error caught: '
         print str(ex)
@@ -82,7 +110,7 @@ def get_subdomains(cur, tld):
 
 # Query the crt.sh postgresql instance looking for shared organizationName or
 # organizationalUnitName. Return the domains/subdomains in one list as strs.
-def get_linked_tlds(cur, org):
+def get_x509_linked_tlds(cur, org):
     ret = []
     transformed = org + '%'
     linked_tld_query = '''
@@ -115,6 +143,23 @@ def get_linked_tlds(cur, org):
     return ret
 
 
+def get_whois_linked_tlds(uniq_tlds, seed):
+    res = []
+    for tld in uniq_tlds:
+        try:
+            whois_record = whois.whois(tld)
+            name = whois_record.name
+            org = whois_record.org
+            if name and run_metric(seed, name, sorensen_dice) >= 0.60:
+                res.append(tld)
+            elif org and run_metric(seed, org, sorensen_dice) >= 0.60:
+                res.append(tld)
+        except whois.parser.PywhoisError:
+            # If it doesn't resolve, it doesn't exist
+            continue
+    return res
+
+
 def get_like_orgs(orgname):
     '''
     SELECT ci.NAME_VALUE NAME_VALUE
@@ -134,13 +179,14 @@ def get_like_orgs(orgname):
 
 # An attempt at performing top level domain extraction from x509 cert data.
 # See: https://stackoverflow.com/a/1066947
-def get_domain_name(fqdn):
+def extract_tld(fqdn):
     parts = fqdn.split('.')
+    common_tld = ['co','net','org','com']
     if len(parts) == 1:
         return ''
     if len(parts) <= 2:
         return fqdn
-    if parts[-2] == 'co' or parts[-2] == 'com':
+    if parts[-2] in common_tld:
         return '.'.join(parts[-3:])
     return '.'.join(parts[-2:])
 
@@ -166,20 +212,21 @@ def run_metric(s1, s2, metric_fn):
 # determining potentially linked "Organization" and "Organizational Unit"
 # fields. But for now, this works OK.
 def sorensen_dice(s1, s2):
-    set1 = set([s1[i:i+2] for i in range(len(s1)-1)])
-    set2 = set([s2[i:i+2] for i in range(len(s2)-1)])
-    n_intersect = len(set1.intersection(set2))
-    n_total = len(set1) + len(set2)
+    b1 = ([s1[i:i+2] for i in range(len(s1)-1)])
+    b2 = ([s2[i:i+2] for i in range(len(s2)-1)])
+    n_intersect = sum([b2.count(bigram) for bigram in set(b1)])
+    n_total = len(b1) + len(b2)
     return float(2 * n_intersect) / float(n_total)
 
 
 def main():
     global BANNER
+    global KNOWN_CA_ORGS
 
-    # The threshold value of 0.6 is arbitrary
+    # The threshold value of 0.75 is arbitrary
     parser = argparse.ArgumentParser(description="Enumerates subdomains and TLDs with x509 data")
     parser.add_argument('-t', metavar='THRESHOLD', 
-                        help='Sorensen-Dice threshold (0.0, 1.0]', type=float, required=False, default=0.6)
+                        help='Sorensen-Dice threshold (0.0, 1.0]', type=float, required=False, default=0.75)
     parser.add_argument('-s', metavar='SEED', help='x509 "Organization" or "Organizational Unit"', required=True)
     parser.add_argument('-o', metavar='FILE', help='optional output file', required=False)
     args = vars(parser.parse_args())
@@ -191,19 +238,17 @@ def main():
     conn = psycopg2.connect(crt_sh_conn_str)
     cur = conn.cursor()
     possible_orgs = set([args['s']])
-    known_domains = set(get_linked_tlds(cur, args['s']))
-    tlds = set(filter(lambda x: not (x == ''),
-                      map(get_domain_name, known_domains)))
+    raw_domains = set(get_x509_linked_tlds(cur, args['s']))
+    uniq_tlds = set(filter(lambda x: not (x == ''), map(extract_tld, map(str.lower, raw_domains))))
 
-    print '[*] Using Sorensen-Dice threshold of %f' % threshold
+    print '[*] Using Sorensen-Dice threshold of %.2f' % threshold
 
-    for tld in tlds:
-        print '[+] Querying subdomains on %s' % tld
-        sub, org = get_subdomains(cur, tld)
-        known_domains |= set(sub)
-        possible_orgs |= set(filter(lambda x: run_metric(x, tld, sorensen_dice) > threshold, org))
+    for tld in uniq_tlds:
+        print '[+] Looking for orgs in subdomains of %s' % tld
+        org = get_tld_linked_orgs(cur, tld)
+        possible_orgs |= set(filter(lambda x: not (x in KNOWN_CA_ORGS), org))
 
-    output = {'known_domains': list(known_domains), 'possible_orgs': list(possible_orgs)}
+    output = {'domains': list(uniq_tlds), 'possible_orgs': list(possible_orgs)}
 
     if args['o']:
         try:
