@@ -1,19 +1,14 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-# TODO: Remove the domain names appearing as organization names
-# TODO: Make the domains all lowercase to avoid running searches more than once
-# TODO: Add the 3rd SQL query to find similar org names
-
-# TODO: Remove Sorensen-Dice, replace with lookup in Crunchbase ODM
-# TODO: Remove WHOIS checks, replace with lookup in Crunchbase
-
 import argparse
 import re
 import json
-import whois
+import subprocess
+import os
 
 import psycopg2
+import whois
 
 
 # An ASCII adaptation of
@@ -43,7 +38,6 @@ BANNER = r'''
 ................&&&&@%%%%%#(((#(((%#&&&&%%########.........
 ...................%&&&&%##%%###%##,,,,,/%%%#(#(*..........
 '''
-
 
 
 # As of 5/24/2018 these CA's have collectively issued approximately
@@ -143,40 +137,6 @@ def get_x509_linked_tlds(cur, org):
     return ret
 
 
-def get_whois_linked_tlds(uniq_tlds, seed):
-    res = []
-    for tld in uniq_tlds:
-        try:
-            whois_record = whois.whois(tld)
-            name = whois_record.name
-            org = whois_record.org
-            if name and run_metric(seed, name, sorensen_dice) >= 0.60:
-                res.append(tld)
-            elif org and run_metric(seed, org, sorensen_dice) >= 0.60:
-                res.append(tld)
-        except whois.parser.PywhoisError:
-            # If it doesn't resolve, it doesn't exist
-            continue
-    return res
-
-
-def get_like_orgs(orgname):
-    '''
-    SELECT ci.NAME_VALUE NAME_VALUE
-    FROM ca,
-     ct_log_entry ctle,
-     certificate_identity ci,
-     certificate c
-    WHERE ci.ISSUER_CA_ID = ca.ID
-     AND ctle.CERTIFICATE_ID = c.ID
-     AND ci.CERTIFICATE_ID = c.ID
-     AND (ci.NAME_TYPE = 'organizationName' OR ci.NAME_TYPE = 'organizationalUnitName')
-     AND lower(ci.NAME_VALUE) LIKE lower('ORG %')
-    GROUP BY NAME_VALUE;
-    '''
-    pass
-
-
 # An attempt at performing top level domain extraction from x509 cert data.
 # See: https://stackoverflow.com/a/1066947
 def extract_tld(fqdn):
@@ -191,59 +151,59 @@ def extract_tld(fqdn):
     return '.'.join(parts[-2:])
 
 
-# A wrapper for sorensen_dice and potentially other metrics. "Normalizes"
-# data for better application of a metric prior to running it. Also in this
-# case performs a "maximal" of the metric in that it uses partial matches,
-# taking the maximal value of any partial match.
-def run_metric(s1, s2, metric_fn):
-    t1 = re.sub(r'[\.\,\"\'\(\-\;]+', '', s1).lower()
-    t2 = re.sub(r'[\.\,\"\'\(\-\;]+', '', s2).lower()
-    tokens_t1 = t1.split(' ')
-    hi = 0
-    for i in range(len(tokens_t1)):
-        next_str = ''.join(tokens_t1[:i+1])
-        hi = max(metric_fn(next_str, t2), hi)
-    return hi
+# If it comes back, then it's a seperate corporate entity. At this point, we
+# cannot say if they are related to our organization becasue we don't have
+# acquisition data from Crunchbase.
+def odm_lookup(domain):
+    if os.path.exists('organizations.csv'):
+        try:
+            subprocess.check_output(['rg', '\"%s\"' % domain, 'organizations.csv'], shell=False)
+        except subprocess.CalledProcessError:
+            return False
+    return True
 
 
-# Computes the Sørensen Dice coefficient of strings s1 and s2. It helps in
-# determining a score for string similarity. String similarity preferred
-# primarily for convenience, it is likely that a better solution exists for
-# determining potentially linked "Organization" and "Organizational Unit"
-# fields. But for now, this works OK.
-def sorensen_dice(s1, s2):
-    b1 = ([s1[i:i+2] for i in range(len(s1)-1)])
-    b2 = ([s2[i:i+2] for i in range(len(s2)-1)])
-    n_intersect = sum([b2.count(bigram) for bigram in set(b1)])
-    n_total = len(b1) + len(b2)
-    return float(2 * n_intersect) / float(n_total)
+def whois_lookup(tld, whois_org):
+    try:
+        parsed = whois.whois(tld)
+        for k,v in parsed.items():
+            if v and v.startswith(whois_org):
+                return True
+    except Exception as ex:
+        print ex
+    return False
 
 
 def main():
     global BANNER
     global KNOWN_CA_ORGS
 
-    # The threshold value of 0.75 is arbitrary
     parser = argparse.ArgumentParser(description="Enumerates subdomains and TLDs with x509 data")
-    parser.add_argument('-t', metavar='THRESHOLD', 
-                        help='Sorensen-Dice threshold (0.0, 1.0]', type=float, required=False, default=0.75)
     parser.add_argument('-s', metavar='SEED', help='x509 "Organization" or "Organizational Unit"', required=True)
+    parser.add_argument('-w', metavar='WHOIS', help='WHOIS organization name for correlation', required=False)
     parser.add_argument('-o', metavar='FILE', help='optional output file', required=False)
     args = vars(parser.parse_args())
-    threshold = args['t']
 
     print BANNER
 
     crt_sh_conn_str = 'dbname=certwatch host=crt.sh user=guest'
     conn = psycopg2.connect(crt_sh_conn_str)
     cur = conn.cursor()
-    possible_orgs = set([args['s']])
+    seed = args['s']
+    whois_org = args['s']
+
+    if args['w']:
+        whois_org = args['w']
+    
+    possible_orgs = set([seed])
     raw_domains = set(get_x509_linked_tlds(cur, args['s']))
     uniq_tlds = set(filter(lambda x: not (x == ''), map(extract_tld, map(str.lower, raw_domains))))
 
-    print '[*] Using Sorensen-Dice threshold of %.2f' % threshold
-
     for tld in uniq_tlds:
+        if odm_lookup(tld) and (not whois_lookup(tld, whois_org)):
+            print '[!] %s belongs to another company, not using!' % tld
+            continue
+       
         print '[+] Looking for orgs in subdomains of %s' % tld
         org = get_tld_linked_orgs(cur, tld)
         possible_orgs |= set(filter(lambda x: not (x in KNOWN_CA_ORGS), org))
@@ -263,3 +223,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
