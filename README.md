@@ -31,3 +31,11 @@ can be used with SANCrawler again if desired.
 
 2. Invoke as follows: `python sancrawler.py -s "Google Trust Services"`
 
+
+-------------------------------------------------------------------------------------
+My moods
+Now generates 2 additional files, Orgs.txt and Sites.txt which contains all of the additional organization foind
+and all of the sites that sancrawler has found.  The domain are extracted from the sites for easily to seperate by
+or whatever, i dont know.
+yes
+

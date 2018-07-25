@@ -10,6 +10,7 @@
 import argparse
 import re
 import json
+import tldextract
 
 import psycopg2
 
@@ -172,6 +173,26 @@ def sorensen_dice(s1, s2):
     n_total = len(set1) + len(set2)
     return float(2 * n_intersect) / float(n_total)
 
+def generate_output(js_file):
+    '''
+    Formats the output
+    Currently adds domains that begins with an "*" but can be removed easily
+    '''
+    #Put all of the found organizations into a file
+    orgs = open('Orgs.txt', 'w+')
+    for org in js_file['possible_orgs']:
+        orgs.write(org)
+        orgs.write('\n')
+    orgs.close()
+    
+    #Put all sites found into a file, which inclues their domains
+    sites = open('Sites.txt', 'w+')
+    for site in js_file['known_domains']:
+        extracted = tldextract.extract(site)
+        domain = "{}.{}".format(extracted.domain, extracted.suffix)
+        sites.write(domain + ";" + site)
+        sites.write('\n')
+    sites.close()
 
 def main():
     global BANNER
@@ -213,7 +234,8 @@ def main():
             print 'Could not output to file: %s' % args['o']
             print 'Error message: %s' % ex.message
     else:
-        print json.dumps(output)
+        #print json.dumps(output)
+        generate_output(output)
 
 
 if __name__ == '__main__':
